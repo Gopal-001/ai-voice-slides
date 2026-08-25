@@ -24,10 +24,6 @@ export default function App() {
     setMessages((prev) => [...prev, { role, text, at: Date.now() }]);
   }, []);
 
-  const handleInterrupt = useCallback(() => {
-    addMessage("system", "⏸ You interrupted the AI");
-  }, [addMessage]);
-
   const generateDeck = useCallback(
     async (topic) => {
       if (busyRef.current || !topic.trim()) return;
@@ -106,7 +102,7 @@ export default function App() {
     [addMessage, generateDeck]
   );
 
-  const voice = useVoice({ onFinalResult: handleFinalResult, onInterrupt: handleInterrupt });
+  const voice = useVoice({ onFinalResult: handleFinalResult });
   const speakRef = useRef(voice.speak);
   speakRef.current = voice.speak;
 
@@ -174,7 +170,7 @@ export default function App() {
             {status === "listening" && "Listening…"}
             {status === "thinking" && "Thinking…"}
             {status === "generating" && "Generating deck…"}
-            {status === "speaking" && (voice.listening ? "Speaking — talk to interrupt" : "Speaking…")}
+            {status === "speaking" && "Speaking — ✋ to interrupt"}
           </span>
         </div>
       </header>
@@ -224,7 +220,13 @@ export default function App() {
               {voice.listening ? "🔴 Stop mic" : "🎤 Start mic"}
             </button>
             {voice.speaking && (
-              <button className="stop-button" onClick={voice.stopSpeaking}>
+              <button
+                className="stop-button"
+                onClick={() => {
+                  voice.stopSpeaking();
+                  addMessage("system", "⏸ Narration interrupted");
+                }}
+              >
                 ✋ Interrupt
               </button>
             )}

@@ -6,13 +6,13 @@ const SpeechRecognition =
     : null;
 
 /**
- * Wraps the Web Speech API:
- *  - continuous speech recognition (mic stays open)
- *  - speech synthesis for the AI's voice
- *  - barge-in: if the user starts talking while the AI is speaking,
- *    the AI is cancelled immediately and the user's speech becomes the next question.
+ * Wraps the Web Speech API with a simple half-duplex model:
+ * the app is either LISTENING (mic open) or SPEAKING (narration playing),
+ * never both. While the AI speaks the mic is paused, so it can never hear
+ * its own voice. Ask a question after the narration finishes, or press the
+ * ✋ Interrupt button to cut it short — the mic reopens immediately.
  */
-export function useVoice({ onFinalResult, onInterrupt }) {
+export function useVoice({ onFinalResult }) {
   const supported = Boolean(SpeechRecognition) && "speechSynthesis" in window;
 
   const [listening, setListening] = useState(false);
@@ -20,38 +20,29 @@ export function useVoice({ onFinalResult, onInterrupt }) {
   const [interimText, setInterimText] = useState("");
 
   const recognitionRef = useRef(null);
-  const listeningRef = useRef(false);
+  const listeningRef = useRef(false); // the user's mic toggle
   const speakingRef = useRef(false);
-  const spokenWordsRef = useRef(new Set());
-  const echoUntilRef = useRef(0);
-  const callbacksRef = useRef({ onFinalResult, onInterrupt });
-  callbacksRef.current = { onFinalResult, onInterrupt };
+  const utteranceRef = useRef(null);
+  const callbacksRef = useRef({ onFinalResult });
+  callbacksRef.current = { onFinalResult };
+
+  const resumeMicIfNeeded = useCallback(() => {
+    if (listeningRef.current) {
+      try {
+        recognitionRef.current?.start();
+      } catch {
+        /* already started */
+      }
+    }
+  }, []);
 
   const stopSpeaking = useCallback(() => {
+    utteranceRef.current = null;
     window.speechSynthesis.cancel();
     speakingRef.current = false;
     setSpeaking(false);
-    echoUntilRef.current = Date.now() + 2500;
-  }, []);
-
-  const normalizeWords = (text) =>
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, "")
-      .split(/\s+/)
-      .filter(Boolean);
-
-  // Echo filter: the mic picks up the AI's own voice through the speakers,
-  // but recognition never transcribes it exactly. Treat a transcript as echo
-  // if most of its words appear in what the AI is currently saying (or said
-  // within the last couple of seconds — recognition results lag the audio).
-  const isEcho = useCallback((text) => {
-    if (!speakingRef.current && Date.now() > echoUntilRef.current) return false;
-    const words = normalizeWords(text);
-    if (words.length === 0) return true;
-    const hits = words.filter((w) => spokenWordsRef.current.has(w)).length;
-    return hits / words.length >= 0.6;
-  }, []);
+    resumeMicIfNeeded();
+  }, [resumeMicIfNeeded]);
 
   useEffect(() => {
     if (!supported) return undefined;
@@ -70,41 +61,24 @@ export function useVoice({ onFinalResult, onInterrupt }) {
         else interim += chunk;
       }
 
-      // Barge-in: real user speech (2+ words, not an echo) cancels the AI mid-sentence
-      const liveText = (final || interim).trim();
-      if (
-        speakingRef.current &&
-        liveText.split(/\s+/).length >= 2 &&
-        !isEcho(liveText)
-      ) {
-        window.speechSynthesis.cancel();
-        speakingRef.current = false;
-        setSpeaking(false);
-        echoUntilRef.current = Date.now() + 2500;
-        callbacksRef.current.onInterrupt?.();
-      }
-
-      // Don't display the AI's own voice as the user's in-progress speech
-      const interimTrimmed = interim.trim();
-      setInterimText(interimTrimmed && !isEcho(interimTrimmed) ? interimTrimmed : "");
+      setInterimText(interim.trim());
 
       const finalText = final.trim();
-      if (finalText && !isEcho(finalText)) {
+      if (finalText) {
         setInterimText("");
         callbacksRef.current.onFinalResult?.(finalText);
       }
     };
 
-    // Chrome ends recognition after silence — restart while the mic toggle is on
+    // Chrome ends recognition after silence — restart while the mic toggle
+    // is on, unless the AI is speaking (mic stays paused until it finishes).
     rec.onend = () => {
-      if (listeningRef.current) {
+      if (listeningRef.current && !speakingRef.current) {
         try {
           rec.start();
         } catch {
           /* already started */
         }
-      } else {
-        setListening(false);
       }
     };
 
@@ -122,16 +96,19 @@ export function useVoice({ onFinalResult, onInterrupt }) {
       rec.stop();
       window.speechSynthesis.cancel();
     };
-  }, [supported, isEcho]);
+  }, [supported]);
 
   const startListening = useCallback(() => {
     if (!recognitionRef.current || listeningRef.current) return;
     listeningRef.current = true;
     setListening(true);
-    try {
-      recognitionRef.current.start();
-    } catch {
-      /* already started */
+    // If the AI is speaking, the mic opens automatically when it finishes
+    if (!speakingRef.current) {
+      try {
+        recognitionRef.current.start();
+      } catch {
+        /* already started */
+      }
     }
   }, []);
 
@@ -142,34 +119,48 @@ export function useVoice({ onFinalResult, onInterrupt }) {
     setInterimText("");
   }, []);
 
-  const speak = useCallback((text) => {
-    return new Promise((resolve) => {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.05;
+  const speak = useCallback(
+    (text) => {
+      return new Promise((resolve) => {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.05;
 
-      const voices = window.speechSynthesis.getVoices();
-      const preferred = voices.find(
-        (v) => v.lang.startsWith("en") && /Google|Natural|Aria|Zira/i.test(v.name)
-      );
-      if (preferred) utterance.voice = preferred;
+        const voices = window.speechSynthesis.getVoices();
+        const preferred = voices.find(
+          (v) => v.lang.startsWith("en") && /Google|Natural|Aria|Zira/i.test(v.name)
+        );
+        if (preferred) utterance.voice = preferred;
 
-      spokenWordsRef.current = new Set(normalizeWords(text));
-      speakingRef.current = true;
-      setSpeaking(true);
+        utteranceRef.current = utterance;
+        speakingRef.current = true;
+        setSpeaking(true);
 
-      const finish = () => {
-        speakingRef.current = false;
-        setSpeaking(false);
-        // Recognition results lag the audio — keep filtering echoes briefly
-        echoUntilRef.current = Date.now() + 2500;
-        resolve();
-      };
-      utterance.onend = finish;
-      utterance.onerror = finish;
-      window.speechSynthesis.speak(utterance);
-    });
-  }, []);
+        // Pause the mic while speaking; abort() discards buffered audio so
+        // nothing the mic already captured leaks through as a question.
+        setInterimText("");
+        try {
+          recognitionRef.current?.abort();
+        } catch {
+          /* not running */
+        }
+
+        const finish = () => {
+          // Superseded by a newer utterance, or already cancelled via stopSpeaking
+          if (utteranceRef.current !== utterance) return resolve();
+          utteranceRef.current = null;
+          speakingRef.current = false;
+          setSpeaking(false);
+          resumeMicIfNeeded();
+          resolve();
+        };
+        utterance.onend = finish;
+        utterance.onerror = finish;
+        window.speechSynthesis.speak(utterance);
+      });
+    },
+    [resumeMicIfNeeded]
+  );
 
   return {
     supported,
