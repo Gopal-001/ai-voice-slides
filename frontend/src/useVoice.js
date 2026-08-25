@@ -22,7 +22,8 @@ export function useVoice({ onFinalResult, onInterrupt }) {
   const recognitionRef = useRef(null);
   const listeningRef = useRef(false);
   const speakingRef = useRef(false);
-  const lastSpokenRef = useRef("");
+  const spokenWordsRef = useRef(new Set());
+  const echoUntilRef = useRef(0);
   const callbacksRef = useRef({ onFinalResult, onInterrupt });
   callbacksRef.current = { onFinalResult, onInterrupt };
 
@@ -30,14 +31,26 @@ export function useVoice({ onFinalResult, onInterrupt }) {
     window.speechSynthesis.cancel();
     speakingRef.current = false;
     setSpeaking(false);
+    echoUntilRef.current = Date.now() + 2500;
   }, []);
 
-  // Heuristic echo filter: if the mic picked up the AI's own voice through
-  // the speakers, the transcript will be a fragment of what was just spoken.
+  const normalizeWords = (text) =>
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, "")
+      .split(/\s+/)
+      .filter(Boolean);
+
+  // Echo filter: the mic picks up the AI's own voice through the speakers,
+  // but recognition never transcribes it exactly. Treat a transcript as echo
+  // if most of its words appear in what the AI is currently saying (or said
+  // within the last couple of seconds — recognition results lag the audio).
   const isEcho = useCallback((text) => {
-    const spoken = lastSpokenRef.current.toLowerCase();
-    const heard = text.toLowerCase().trim();
-    return heard.length > 0 && spoken.includes(heard);
+    if (!speakingRef.current && Date.now() > echoUntilRef.current) return false;
+    const words = normalizeWords(text);
+    if (words.length === 0) return true;
+    const hits = words.filter((w) => spokenWordsRef.current.has(w)).length;
+    return hits / words.length >= 0.6;
   }, []);
 
   useEffect(() => {
@@ -67,10 +80,13 @@ export function useVoice({ onFinalResult, onInterrupt }) {
         window.speechSynthesis.cancel();
         speakingRef.current = false;
         setSpeaking(false);
+        echoUntilRef.current = Date.now() + 2500;
         callbacksRef.current.onInterrupt?.();
       }
 
-      setInterimText(interim.trim());
+      // Don't display the AI's own voice as the user's in-progress speech
+      const interimTrimmed = interim.trim();
+      setInterimText(interimTrimmed && !isEcho(interimTrimmed) ? interimTrimmed : "");
 
       const finalText = final.trim();
       if (finalText && !isEcho(finalText)) {
@@ -138,13 +154,15 @@ export function useVoice({ onFinalResult, onInterrupt }) {
       );
       if (preferred) utterance.voice = preferred;
 
-      lastSpokenRef.current = text;
+      spokenWordsRef.current = new Set(normalizeWords(text));
       speakingRef.current = true;
       setSpeaking(true);
 
       const finish = () => {
         speakingRef.current = false;
         setSpeaking(false);
+        // Recognition results lag the audio — keep filtering echoes briefly
+        echoUntilRef.current = Date.now() + 2500;
         resolve();
       };
       utterance.onend = finish;
