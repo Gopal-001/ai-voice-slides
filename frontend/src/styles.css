@@ -72,6 +72,71 @@ body {
   50% { opacity: 0.6; }
 }
 
+.deck-topic {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-top: 2px;
+}
+
+.notice {
+  background: #2a2a1a;
+  color: #ffe9a8;
+  padding: 10px 16px;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.notice code {
+  background: #1a1a10;
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+
+.topic-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.topic-row input {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid #2e3763;
+  border-radius: 12px;
+  padding: 12px 16px;
+  color: var(--text);
+  font-size: 0.95rem;
+  outline: none;
+}
+
+.topic-row input:focus {
+  border-color: var(--accent);
+}
+
+.topic-row button {
+  background: linear-gradient(90deg, var(--accent), #5a8bff);
+  color: white;
+  border: none;
+  padding: 12px 22px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.topic-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.status-generating {
+  color: #ffd166;
+  box-shadow: 0 0 0 1px #ffd166 inset;
+  animation: pulse 1.2s infinite;
+}
+
 .warning {
   background: #4a1a2a;
   color: #ffb3c1;
