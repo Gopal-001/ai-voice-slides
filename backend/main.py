@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from agent import (
-    CLAUDE_ENABLED,
+    PROVIDER,
     DeckGenerationUnavailable,
     ask_agent,
     generate_deck,
@@ -68,7 +68,7 @@ def post_ask(body: AskRequest):
 
 @app.get("/api/health")
 def get_health():
-    return {"ok": True, "mode": "claude" if CLAUDE_ENABLED else "offline"}
+    return {"ok": True, "mode": PROVIDER}
 
 
 if __name__ == "__main__":

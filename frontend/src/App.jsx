@@ -177,8 +177,10 @@ export default function App() {
         </div>
         <div className="topbar-right">
           {agentMode && (
-            <span className={`badge ${agentMode === "claude" ? "badge-claude" : "badge-offline"}`}>
-              {agentMode === "claude" ? "Claude agent" : "Offline mode"}
+            <span className={`badge ${agentMode === "offline" ? "badge-offline" : "badge-claude"}`}>
+              {agentMode === "claude" && "Claude agent"}
+              {agentMode === "gemini" && "Gemini agent"}
+              {agentMode === "offline" && "Offline mode"}
             </span>
           )}
           <span className={`status status-${status}`}>
@@ -200,8 +202,9 @@ export default function App() {
       {agentMode === "offline" && (
         <div className="notice">
           Offline mode: Q&amp;A uses simple text matching and new decks can't be generated.
-          Add <code>ANTHROPIC_API_KEY</code> to <code>backend/.env</code> and restart the backend
-          to present any topic.
+          Add <code>ANTHROPIC_API_KEY</code> or <code>GEMINI_API_KEY</code> (free at{" "}
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">aistudio.google.com</a>)
+          to <code>backend/.env</code> and restart the backend to present any topic.
         </div>
       )}
 

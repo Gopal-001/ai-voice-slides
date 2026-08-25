@@ -1,7 +1,9 @@
 """The agent brain: deck generation and deck-grounded Q&A.
 
-Uses the Claude API when ANTHROPIC_API_KEY is set; otherwise falls back
-to word-overlap matching so the prototype still runs without a key.
+Providers, in order of preference:
+  1. Claude   — set ANTHROPIC_API_KEY
+  2. Gemini   — set GEMINI_API_KEY (free tier at https://aistudio.google.com)
+  3. Offline  — word-overlap matching, so the prototype runs with no key at all
 """
 
 import json
@@ -9,17 +11,33 @@ import os
 import re
 
 import anthropic
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
 CLAUDE_ENABLED = bool(os.environ.get("ANTHROPIC_API_KEY"))
+GEMINI_ENABLED = bool(os.environ.get("GEMINI_API_KEY"))
+
+# Auto-pick a provider; LLM_PROVIDER=claude|gemini|offline in .env forces one
+# (useful when a key is present but unusable, e.g. no API credits).
+_requested = os.environ.get("LLM_PROVIDER", "").strip().lower()
+if _requested == "claude" and CLAUDE_ENABLED:
+    PROVIDER = "claude"
+elif _requested == "gemini" and GEMINI_ENABLED:
+    PROVIDER = "gemini"
+elif _requested == "offline":
+    PROVIDER = "offline"
+else:
+    PROVIDER = "claude" if CLAUDE_ENABLED else "gemini" if GEMINI_ENABLED else "offline"
+
 client = anthropic.Anthropic() if CLAUDE_ENABLED else None
 
 MODEL = "claude-opus-5"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ---------------------------------------------------------------------------
-# Deck generation: Claude writes a 6-slide deck on any topic
+# Deck generation: the LLM writes a 6-slide deck on any topic
 # ---------------------------------------------------------------------------
 
 DECK_PROMPT = """You write slide decks for a live AI voice presenter. The narration is read aloud by text-to-speech, so it must be natural spoken prose — no markdown, no symbols, no lists.
@@ -56,20 +74,52 @@ def _response_text(response) -> str:
     return "".join(block.text for block in response.content if block.type == "text")
 
 
+def _gemini_text(system: str, user: str, max_tokens: int) -> str:
+    """Call the Gemini REST API (free tier) and return the response text."""
+    response = httpx.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+        json={
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "responseMimeType": "application/json",
+            },
+        },
+        timeout=90.0,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return "".join(
+        part.get("text", "")
+        for part in data["candidates"][0]["content"]["parts"]
+    )
+
+
+def _llm_text(system: str, user: str, max_tokens: int) -> str:
+    """Route a single system+user request to the configured provider."""
+    if PROVIDER == "claude":
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=max_tokens,
+            output_config={"effort": "low"},  # low latency matters for voice
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        return _response_text(response)
+    return _gemini_text(system, user, max_tokens)
+
+
 def generate_deck(topic: str) -> dict:
-    if client is None:
+    if PROVIDER == "offline":
         raise DeckGenerationUnavailable(
-            "Deck generation needs the Claude API. Add ANTHROPIC_API_KEY to "
-            "backend/.env and restart the backend."
+            "Deck generation needs an LLM. Add ANTHROPIC_API_KEY (Claude) or "
+            "GEMINI_API_KEY (free at aistudio.google.com) to backend/.env and "
+            "restart the backend."
         )
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=8000,
-        system=DECK_PROMPT,
-        messages=[{"role": "user", "content": f"Topic: {topic}"}],
-    )
-    parsed = _extract_json(_response_text(response))
+    parsed = _extract_json(_llm_text(DECK_PROMPT, f"Topic: {topic}", 8000))
 
     slides = parsed.get("slides")
     if not isinstance(slides, list) or len(slides) < 3:
@@ -120,20 +170,13 @@ Respond with ONLY a JSON object, no other text:
 {{"answer": "<spoken answer>", "slide": <slide id 0-{last}>}}"""
 
 
-def _claude_agent(question: str, current_slide: int, deck: dict) -> dict:
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=1024,  # spoken answers are deliberately short
-        output_config={"effort": "low"},  # low latency matters for voice
-        system=_build_system_prompt(deck),
-        messages=[
-            {
-                "role": "user",
-                "content": f'Current slide: {current_slide}. User asked (via voice): "{question}"',
-            }
-        ],
+def _llm_agent(question: str, current_slide: int, deck: dict) -> dict:
+    text = _llm_text(
+        _build_system_prompt(deck),
+        f'Current slide: {current_slide}. User asked (via voice): "{question}"',
+        1024,  # spoken answers are deliberately short
     )
-    parsed = _extract_json(_response_text(response))
+    parsed = _extract_json(text)
     slide = min(max(int(parsed.get("slide") or 0), 0), len(deck["slides"]) - 1)
     return {"answer": str(parsed.get("answer") or ""), "slide": slide}
 
@@ -226,10 +269,10 @@ def _fallback_agent(question: str, current_slide: int, deck: dict) -> dict:
 
 def ask_agent(question: str, current_slide: int, deck: dict) -> dict:
     """Answer a question and choose the slide to show, grounded in the current deck."""
-    if client is None:
+    if PROVIDER == "offline":
         return {**_fallback_agent(question, current_slide, deck), "source": "offline"}
     try:
-        return {**_claude_agent(question, current_slide, deck), "source": "claude"}
+        return {**_llm_agent(question, current_slide, deck), "source": PROVIDER}
     except anthropic.AuthenticationError:
         print("Invalid ANTHROPIC_API_KEY — falling back to offline mode.")
     except anthropic.RateLimitError:
@@ -238,6 +281,10 @@ def ask_agent(question: str, current_slide: int, deck: dict) -> dict:
         print(f"Claude API error {error.status_code}: {error.message}")
     except anthropic.APIConnectionError as error:
         print(f"Could not reach the Claude API: {error}")
-    except (json.JSONDecodeError, ValueError, KeyError) as error:
+    except httpx.HTTPStatusError as error:
+        print(f"Gemini API error {error.response.status_code}: {error.response.text[:300]}")
+    except httpx.HTTPError as error:
+        print(f"Could not reach the Gemini API: {error}")
+    except (json.JSONDecodeError, ValueError, KeyError, IndexError) as error:
         print(f"Could not parse the model response: {error}")
     return {**_fallback_agent(question, current_slide, deck), "source": "offline-fallback"}

@@ -12,9 +12,11 @@ A working prototype of an **AI voice presentation agent**. Type or say any topic
 - **Barge-in interruption** — start talking while the AI is speaking and it stops immediately; your speech becomes the next question
 - **Voice navigation** — "next slide", "go back", "go to slide 3"
 - **Lightweight stack** — React + Vite frontend, Python + FastAPI backend
-- **Two agent modes**:
-  - **Claude mode** (recommended): set `ANTHROPIC_API_KEY` — generates decks on any topic, answers free-form questions from the deck content, and picks the target slide
-  - **Offline mode** (zero config): word-overlap matching maps questions to slides of the sample deck; deck generation is unavailable without a key
+- **Three agent modes** (picked automatically from `backend/.env`):
+  - **Claude mode**: set `ANTHROPIC_API_KEY` (paid, [console.anthropic.com](https://console.anthropic.com/settings/keys))
+  - **Gemini mode**: set `GEMINI_API_KEY` — **free tier, no credit card** ([aistudio.google.com/apikey](https://aistudio.google.com/apikey))
+  - **Offline mode** (zero config): word-overlap matching maps questions to slides of the current deck; deck generation is unavailable without a key
+  - Optional `LLM_PROVIDER=claude|gemini|offline` forces a provider when both keys are set
 
 ## Architecture
 
@@ -47,7 +49,7 @@ python -m venv .venv
 .venv\Scripts\activate            # Windows (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
 copy .env.example .env            # optional: add your ANTHROPIC_API_KEY for the full agent
-uvicorn main:app --port 3001 --reload
+python -m uvicorn main:app --port 3001 --reload
 ```
 
 Without an API key the backend runs in offline keyword-matching mode — fine for a demo.
