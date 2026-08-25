@@ -11,7 +11,7 @@ A working prototype of an **AI voice presentation agent**. Type or say any topic
 - **Automatic slide navigation** — ask "why do models hallucinate?" and the deck jumps to the Limitations slide while the AI answers
 - **Barge-in interruption** — start talking while the AI is speaking and it stops immediately; your speech becomes the next question
 - **Voice navigation** — "next slide", "go back", "go to slide 3"
-- **Lightweight stack** — React + Vite frontend, Node + Express backend
+- **Lightweight stack** — React + Vite frontend, Python + FastAPI backend
 - **Two agent modes**:
   - **Claude mode** (recommended): set `ANTHROPIC_API_KEY` — generates decks on any topic, answers free-form questions from the deck content, and picks the target slide
   - **Offline mode** (zero config): word-overlap matching maps questions to slides of the sample deck; deck generation is unavailable without a key
@@ -20,7 +20,7 @@ A working prototype of an **AI voice presentation agent**. Type or say any topic
 
 ```
 ┌────────────────────────────┐        ┌──────────────────────────────┐
-│  Frontend (React + Vite)   │        │  Backend (Node + Express)    │
+│  Frontend (React + Vite)   │        │  Backend (Python + FastAPI)  │
 │                            │        │                              │
 │  Web Speech API            │  HTTP  │  GET  /api/slides            │
 │   ├─ SpeechRecognition ────┼───────▶│  POST /api/ask               │
@@ -37,15 +37,17 @@ The interruption logic lives in the frontend ([useVoice.js](frontend/src/useVoic
 
 ## Getting started
 
-**Requirements:** Node 18+, and **Chrome or Edge** (the Web Speech API's `SpeechRecognition` is not available in Firefox).
+**Requirements:** Python 3.10+, Node 18+ (for the frontend), and **Chrome or Edge** (the Web Speech API's `SpeechRecognition` is not available in Firefox).
 
 ### 1. Backend
 
 ```bash
 cd backend
-npm install
-cp .env.example .env   # optional: add your ANTHROPIC_API_KEY for the full agent
-npm run dev            # starts on http://localhost:3001
+python -m venv .venv
+.venv\Scripts\activate            # Windows (macOS/Linux: source .venv/bin/activate)
+pip install -r requirements.txt
+copy .env.example .env            # optional: add your ANTHROPIC_API_KEY for the full agent
+uvicorn main:app --port 3001 --reload
 ```
 
 Without an API key the backend runs in offline keyword-matching mode — fine for a demo.
@@ -79,9 +81,10 @@ Open http://localhost:5173, click **🎤 Start mic**, allow microphone access, a
 ```
 ai-voice-slides/
 ├── backend/
-│   ├── server.js      # Express app: /api/slides, /api/ask, /api/health
-│   ├── agent.js       # Claude-powered agent + offline keyword fallback
-│   ├── slides.js      # Slide content, narration scripts, keywords
+│   ├── main.py          # FastAPI app: /api/slides, /api/ask, /api/generate-deck, /api/health
+│   ├── agent.py         # Claude-powered agent + offline word-matching fallback
+│   ├── slides_data.py   # Built-in sample deck (startup default)
+│   ├── requirements.txt
 │   └── .env.example
 └── frontend/
     ├── src/

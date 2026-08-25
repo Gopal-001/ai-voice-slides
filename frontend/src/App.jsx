@@ -47,7 +47,7 @@ export default function App() {
           body: JSON.stringify({ topic: topic.trim() }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Backend returned ${res.status}`);
+        if (!res.ok) throw new Error(data.detail || data.error || `Backend returned ${res.status}`);
 
         setSlides(data.slides);
         setDeckTopic(data.topic);
