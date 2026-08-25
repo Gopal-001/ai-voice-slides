@@ -12,25 +12,19 @@ export default function App() {
   const [deckTopic, setDeckTopic] = useState("");
   const [topicInput, setTopicInput] = useState("");
   const [currentSlide, setCurrentSlide] = useState(0);
-  const [status, setStatus] = useState("idle"); // idle | listening | thinking | generating | speaking
+  const [busy, setBusy] = useState(null); // null | "thinking" | "generating"
   const [messages, setMessages] = useState([]);
   const [agentMode, setAgentMode] = useState(null);
 
   const currentSlideRef = useRef(0);
   currentSlideRef.current = currentSlide;
   const busyRef = useRef(false); // true while a question/generation is in flight
-  const listeningRef = useRef(false);
 
   const addMessage = useCallback((role, text) => {
     setMessages((prev) => [...prev, { role, text, at: Date.now() }]);
   }, []);
 
-  const settleStatus = useCallback(() => {
-    setStatus(listeningRef.current ? "listening" : "idle");
-  }, []);
-
   const handleInterrupt = useCallback(() => {
-    setStatus("listening");
     addMessage("system", "⏸ You interrupted the AI");
   }, [addMessage]);
 
@@ -39,7 +33,7 @@ export default function App() {
       if (busyRef.current || !topic.trim()) return;
       busyRef.current = true;
       addMessage("system", `📑 Generating a deck about “${topic.trim()}”…`);
-      setStatus("generating");
+      setBusy("generating");
       try {
         const res = await fetch("/api/generate-deck", {
           method: "POST",
@@ -53,24 +47,22 @@ export default function App() {
         setDeckTopic(data.topic);
         setCurrentSlide(0);
         addMessage("system", `✅ New deck ready: ${data.topic}`);
+        setBusy(null);
+        busyRef.current = false;
 
         const intro = data.slides[0]?.narration;
         if (intro) {
           addMessage("ai", intro);
-          setStatus("speaking");
-          busyRef.current = false; // allow barge-in during the intro
           await speakRef.current(intro);
-          setStatus((s) => (s === "speaking" ? (listeningRef.current ? "listening" : "idle") : s));
-          return;
         }
       } catch (err) {
         console.error(err);
         addMessage("system", `⚠ ${err.message}`);
+        setBusy(null);
+        busyRef.current = false;
       }
-      busyRef.current = false;
-      settleStatus();
     },
-    [addMessage, settleStatus]
+    [addMessage]
   );
 
   const handleFinalResult = useCallback(
@@ -86,7 +78,7 @@ export default function App() {
 
       busyRef.current = true;
       addMessage("user", question);
-      setStatus("thinking");
+      setBusy("thinking");
       try {
         const res = await fetch("/api/ask", {
           method: "POST",
@@ -101,24 +93,25 @@ export default function App() {
           addMessage("system", `→ Jumped to slide ${slide + 1}`);
         }
         addMessage("ai", answer);
-        setStatus("speaking");
+        setBusy(null);
         busyRef.current = false; // allow barge-in questions while speaking
         await speakRef.current(answer);
-        setStatus((s) => (s === "speaking" ? (listeningRef.current ? "listening" : "idle") : s));
       } catch (err) {
         console.error(err);
         addMessage("system", "⚠ Couldn't reach the backend. Is it running on port 3001?");
-        settleStatus();
+        setBusy(null);
         busyRef.current = false;
       }
     },
-    [addMessage, generateDeck, settleStatus]
+    [addMessage, generateDeck]
   );
 
   const voice = useVoice({ onFinalResult: handleFinalResult, onInterrupt: handleInterrupt });
   const speakRef = useRef(voice.speak);
   speakRef.current = voice.speak;
-  listeningRef.current = voice.listening;
+
+  // Status is derived, not managed: requests > narration > mic state
+  const status = busy ?? (voice.speaking ? "speaking" : voice.listening ? "listening" : "idle");
 
   // Load the deck + agent mode from the backend
   useEffect(() => {
@@ -135,15 +128,10 @@ export default function App() {
       .catch(() => {});
   }, [addMessage]);
 
+  // Mic button: pure listen on/off toggle — never touches narration
   const toggleMic = () => {
-    if (voice.listening) {
-      // Only stop listening — an in-progress narration keeps playing
-      voice.stopListening();
-      if (!voice.speaking) setStatus("idle");
-    } else {
-      voice.startListening();
-      if (!voice.speaking) setStatus("listening");
-    }
+    if (voice.listening) voice.stopListening();
+    else voice.startListening();
   };
 
   const presentSlide = async (index) => {
@@ -152,9 +140,7 @@ export default function App() {
     voice.stopSpeaking();
     setCurrentSlide(index);
     addMessage("ai", slide.narration);
-    setStatus("speaking");
     await voice.speak(slide.narration);
-    settleStatus();
   };
 
   const goTo = (index) => {
@@ -214,10 +200,10 @@ export default function App() {
           value={topicInput}
           onChange={(e) => setTopicInput(e.target.value)}
           placeholder='Present any topic… e.g. "The Roman Empire" or "How rockets work"'
-          disabled={status === "generating"}
+          disabled={busy === "generating"}
         />
-        <button type="submit" disabled={status === "generating" || !topicInput.trim()}>
-          {status === "generating" ? "Generating…" : "✨ Generate deck"}
+        <button type="submit" disabled={busy === "generating" || !topicInput.trim()}>
+          {busy === "generating" ? "Generating…" : "✨ Generate deck"}
         </button>
       </form>
 
@@ -238,7 +224,7 @@ export default function App() {
               {voice.listening ? "🔴 Stop mic" : "🎤 Start mic"}
             </button>
             {voice.speaking && (
-              <button className="stop-button" onClick={() => { voice.stopSpeaking(); setStatus("listening"); }}>
+              <button className="stop-button" onClick={voice.stopSpeaking}>
                 ✋ Interrupt
               </button>
             )}
