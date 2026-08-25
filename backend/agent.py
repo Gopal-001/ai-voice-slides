@@ -65,6 +65,10 @@ class DeckGenerationUnavailable(Exception):
     """Raised when deck generation is requested but no API key is configured."""
 
 
+class GeminiAPIError(Exception):
+    """A non-200 response from the Gemini API, with its message."""
+
+
 # Gemini structured-output schemas (OpenAPI subset)
 DECK_SCHEMA = {
     "type": "OBJECT",
@@ -126,7 +130,12 @@ def _gemini_text(system: str, user: str, max_tokens: int, schema: dict | None) -
         },
         timeout=90.0,
     )
-    response.raise_for_status()
+    if response.status_code != 200:
+        try:
+            message = response.json()["error"]["message"]
+        except Exception:
+            message = response.text[:200]
+        raise GeminiAPIError(f"Gemini API error {response.status_code}: {message}")
     data = response.json()
     candidate = data["candidates"][0]
     if candidate.get("finishReason") == "MAX_TOKENS":
@@ -330,8 +339,8 @@ def ask_agent(question: str, current_slide: int, deck: dict) -> dict:
         print(f"Claude API error {error.status_code}: {error.message}")
     except anthropic.APIConnectionError as error:
         print(f"Could not reach the Claude API: {error}")
-    except httpx.HTTPStatusError as error:
-        print(f"Gemini API error {error.response.status_code}: {error.response.text[:300]}")
+    except GeminiAPIError as error:
+        print(str(error))
     except httpx.HTTPError as error:
         print(f"Could not reach the Gemini API: {error}")
     except (json.JSONDecodeError, ValueError, KeyError, IndexError) as error:
