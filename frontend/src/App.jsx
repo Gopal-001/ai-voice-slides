@@ -137,12 +137,12 @@ export default function App() {
 
   const toggleMic = () => {
     if (voice.listening) {
+      // Only stop listening — an in-progress narration keeps playing
       voice.stopListening();
-      voice.stopSpeaking();
-      setStatus("idle");
+      if (!voice.speaking) setStatus("idle");
     } else {
       voice.startListening();
-      setStatus("listening");
+      if (!voice.speaking) setStatus("listening");
     }
   };
 
@@ -188,7 +188,7 @@ export default function App() {
             {status === "listening" && "Listening…"}
             {status === "thinking" && "Thinking…"}
             {status === "generating" && "Generating deck…"}
-            {status === "speaking" && "Speaking — talk to interrupt"}
+            {status === "speaking" && (voice.listening ? "Speaking — talk to interrupt" : "Speaking…")}
           </span>
         </div>
       </header>
