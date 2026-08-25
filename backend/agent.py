@@ -65,6 +65,38 @@ class DeckGenerationUnavailable(Exception):
     """Raised when deck generation is requested but no API key is configured."""
 
 
+# Gemini structured-output schemas (OpenAPI subset)
+DECK_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "topic": {"type": "STRING"},
+        "slides": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "title": {"type": "STRING"},
+                    "subtitle": {"type": "STRING"},
+                    "bullets": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    "narration": {"type": "STRING"},
+                },
+                "required": ["title", "subtitle", "bullets", "narration"],
+            },
+        },
+    },
+    "required": ["topic", "slides"],
+}
+
+ANSWER_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "answer": {"type": "STRING"},
+        "slide": {"type": "INTEGER"},
+    },
+    "required": ["answer", "slide"],
+}
+
+
 def _extract_json(text: str) -> dict:
     match = re.search(r"\{[\s\S]*\}", text)
     return json.loads(match.group(0) if match else text)
@@ -74,30 +106,38 @@ def _response_text(response) -> str:
     return "".join(block.text for block in response.content if block.type == "text")
 
 
-def _gemini_text(system: str, user: str, max_tokens: int) -> str:
+def _gemini_text(system: str, user: str, max_tokens: int, schema: dict | None) -> str:
     """Call the Gemini REST API (free tier) and return the response text."""
+    generation_config = {
+        "maxOutputTokens": max_tokens,
+        "responseMimeType": "application/json",
+    }
+    if schema:
+        # Structured output: constrains Gemini to valid JSON matching the schema
+        generation_config["responseSchema"] = schema
+
     response = httpx.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
         headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
         json={
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {
-                "maxOutputTokens": max_tokens,
-                "responseMimeType": "application/json",
-            },
+            "generationConfig": generation_config,
         },
         timeout=90.0,
     )
     response.raise_for_status()
     data = response.json()
+    candidate = data["candidates"][0]
+    if candidate.get("finishReason") == "MAX_TOKENS":
+        raise ValueError("Gemini response was cut off (MAX_TOKENS)")
     return "".join(
         part.get("text", "")
-        for part in data["candidates"][0]["content"]["parts"]
+        for part in candidate["content"]["parts"]
     )
 
 
-def _llm_text(system: str, user: str, max_tokens: int) -> str:
+def _llm_text(system: str, user: str, max_tokens: int, schema: dict | None = None) -> str:
     """Route a single system+user request to the configured provider."""
     if PROVIDER == "claude":
         response = client.messages.create(
@@ -108,7 +148,16 @@ def _llm_text(system: str, user: str, max_tokens: int) -> str:
             messages=[{"role": "user", "content": user}],
         )
         return _response_text(response)
-    return _gemini_text(system, user, max_tokens)
+    return _gemini_text(system, user, max_tokens, schema)
+
+
+def _llm_json(system: str, user: str, max_tokens: int, schema: dict | None = None) -> dict:
+    """LLM call + JSON parse, with one retry — models occasionally emit broken JSON."""
+    try:
+        return _extract_json(_llm_text(system, user, max_tokens, schema))
+    except (json.JSONDecodeError, ValueError) as error:
+        print(f"Bad JSON from model ({error}) — retrying once")
+        return _extract_json(_llm_text(system, user, max_tokens, schema))
 
 
 def generate_deck(topic: str) -> dict:
@@ -119,7 +168,7 @@ def generate_deck(topic: str) -> dict:
             "restart the backend."
         )
 
-    parsed = _extract_json(_llm_text(DECK_PROMPT, f"Topic: {topic}", 8000))
+    parsed = _llm_json(DECK_PROMPT, f"Topic: {topic}", 8000, DECK_SCHEMA)
 
     slides = parsed.get("slides")
     if not isinstance(slides, list) or len(slides) < 3:
@@ -171,12 +220,12 @@ Respond with ONLY a JSON object, no other text:
 
 
 def _llm_agent(question: str, current_slide: int, deck: dict) -> dict:
-    text = _llm_text(
+    parsed = _llm_json(
         _build_system_prompt(deck),
         f'Current slide: {current_slide}. User asked (via voice): "{question}"',
         1024,  # spoken answers are deliberately short
+        ANSWER_SCHEMA,
     )
-    parsed = _extract_json(text)
     slide = min(max(int(parsed.get("slide") or 0), 0), len(deck["slides"]) - 1)
     return {"answer": str(parsed.get("answer") or ""), "slide": slide}
 
